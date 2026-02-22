@@ -1,7 +1,7 @@
 import cloudinary from "../config/cloudnairy.js";
 import Message from "../models/message.model.js";
 import User from "../models/user.model.js";
-import { io, onlineUsers } from "../../server.js";
+import { getIO, onlineUsers } from "../services/socket.js";
 
 /* =================================
    Get All Users Except Logged In
@@ -11,12 +11,12 @@ export const getAllUsers = async (req, res) => {
   try {
     const loggedInUserId = req.user.id;
 
-    // Get all users except logged in
-    const users = await User.find({
-      _id: { $ne: loggedInUserId },
-    }).select("-password");
+    // Fetch all users except the logged-in user
+    const users = await User.find({ _id: { $ne: loggedInUserId } }).select(
+      "-password"
+    );
 
-    // Attach unread count to each user
+    // Attach unread message count for each user
     const usersWithUnread = await Promise.all(
       users.map(async (user) => {
         const unreadCount = await Message.countDocuments({
@@ -38,10 +38,8 @@ export const getAllUsers = async (req, res) => {
       users: usersWithUnread,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("GetAllUsers Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -55,35 +53,46 @@ export const sendMessage = async (req, res) => {
     const { receiverId } = req.params;
     const senderId = req.user.id;
 
+    // Validate receiver
     const receiver = await User.findById(receiverId);
     if (!receiver) {
-      return res.status(404).json({
-        success: false,
-        message: "Receiver not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Receiver not found" });
     }
 
+    // Upload image to Cloudinary if provided
     let imageUrl = "";
-
     if (image) {
       const uploadResponse = await cloudinary.uploader.upload(image, {
         folder: "quickchat_messages",
       });
-
       imageUrl = uploadResponse.secure_url;
     }
 
+    // Ensure at least text or image exists
+    if (!text?.trim() && !imageUrl) {
+      return res
+        .status(400)
+        .json({
+          success: false,
+          message: "Message must contain text or image",
+        });
+    }
+
+    // Create message
     const message = await Message.create({
       sender: senderId,
       receiver: receiverId,
-      text,
+      text: text || "",
       image: imageUrl,
     });
 
-    const recieverSocketId = onlineUsers.get(receiverId);
-
-    if (recieverSocketId) {
-      io.to(recieverSocketId).emit("receiveMessage", message);
+    // Emit socket event if receiver is online
+    const io = getIO();
+    const receiverSocketId = onlineUsers.get(receiverId.toString());
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit("receiveMessage", message);
     }
 
     res.status(201).json({
@@ -92,12 +101,11 @@ export const sendMessage = async (req, res) => {
       data: message,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("SendMessage Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
+
 /* =================================
    Get Conversation Between 2 Users
    GET /api/messages/:userId
@@ -120,10 +128,8 @@ export const getConversation = async (req, res) => {
       messages,
     });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("GetConversation Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
@@ -137,36 +143,26 @@ export const markAsSeen = async (req, res) => {
     const { userId } = req.params;
 
     await Message.updateMany(
-      {
-        sender: userId,
-        receiver: myId,
-        seen: false,
-      },
+      { sender: userId, receiver: myId, seen: false },
       { $set: { seen: true } }
     );
 
-    const senderSocketId = onlineUsers.get(userId);
-
+    const io = getIO();
+    const senderSocketId = onlineUsers.get(userId.toString());
     if (senderSocketId) {
-      io.to(senderSocketId).emit("messagesSeen", {
-        seenBy: myId,
-      });
+      io.to(senderSocketId).emit("messagesSeen", { seenBy: myId });
     }
 
-    res.status(200).json({
-      success: true,
-      message: "Messages marked as seen",
-    });
+    res.status(200).json({ success: true, message: "Messages marked as seen" });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("MarkAsSeen Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };
 
 /* =================================
-   Delete Message (Optional)
+   Delete Message
+   DELETE /api/messages/:messageId
 ================================= */
 export const deleteMessage = async (req, res) => {
   try {
@@ -174,32 +170,28 @@ export const deleteMessage = async (req, res) => {
     const myId = req.user.id;
 
     const message = await Message.findById(messageId);
-
     if (!message) {
-      return res.status(404).json({
-        success: false,
-        message: "Message not found",
-      });
+      return res
+        .status(404)
+        .json({ success: false, message: "Message not found" });
     }
 
-    // Only sender can delete
     if (message.sender.toString() !== myId) {
-      return res.status(403).json({
-        success: false,
-        message: "Not authorized to delete this message",
-      });
+      return res
+        .status(403)
+        .json({
+          success: false,
+          message: "Not authorized to delete this message",
+        });
     }
 
     await message.deleteOne();
 
-    res.status(200).json({
-      success: true,
-      message: "Message deleted successfully",
-    });
+    res
+      .status(200)
+      .json({ success: true, message: "Message deleted successfully" });
   } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
+    console.error("DeleteMessage Error:", error);
+    res.status(500).json({ success: false, message: error.message });
   }
 };

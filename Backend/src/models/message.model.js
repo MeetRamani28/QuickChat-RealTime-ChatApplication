@@ -7,24 +7,21 @@ const messageSchema = new mongoose.Schema(
       ref: "User",
       required: [true, "Sender is required"],
     },
-
     receiver: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: [true, "Receiver is required"],
     },
-
     text: {
       type: String,
       trim: true,
       maxlength: [1000, "Message cannot exceed 1000 characters"],
+      default: "",
     },
-
     image: {
       type: String,
       default: "",
     },
-
     seen: {
       type: Boolean,
       default: false,
@@ -36,14 +33,13 @@ const messageSchema = new mongoose.Schema(
 );
 
 /* ===============================
-   Validation: Either text or image required
+   Custom Schema-level Validator
+   Ensures either text or image is present
 ================================ */
-messageSchema.pre("validate", function (next) {
-  if (!this.text && !this.image) {
-    next(new Error("Message must contain text or image"));
-  }
-  next();
-});
+messageSchema.path("text").validate(function () {
+  // `this` refers to the document
+  return this.text.trim() !== "" || (this.image && this.image.trim() !== "");
+}, "Message must contain text or image");
 
 /* ===============================
    Indexing (Important for Chat Apps)
